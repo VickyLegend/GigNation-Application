@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/login.dart';
 import 'screens/register.dart';
 import 'screens/home.dart';
-import 'services/google_auth_service.dart'; // ✅ Added for Google sign-in on welcome screen
+import 'screens/splash_screen.dart';
+import 'screens/profile_setup_screen.dart';
+import 'services/google_auth_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,18 +17,63 @@ void main() async {
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndoanFsb2Z0YW1pbXVnc2NiYnVuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczMzI4MzIsImV4cCI6MjA5MjkwODgzMn0.s6ttZ20EeCRmsrWkvLuqz9EogjpSBriAE7YH1fn2up8',
   );
 
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.dark,
-    ),
-  );
-
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+// ─────────────────────────────────────────────
+// Theme Notifier — persists dark/light mode
+// ─────────────────────────────────────────────
+
+class ThemeNotifier extends ChangeNotifier {
+  static const _key = 'theme_mode';
+  ThemeMode _mode = ThemeMode.dark;
+
+  ThemeMode get mode => _mode;
+  bool get isDark => _mode == ThemeMode.dark;
+
+  ThemeNotifier() {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_key);
+    _mode = saved == 'light' ? ThemeMode.light : ThemeMode.dark;
+    notifyListeners();
+  }
+
+  Future<void> toggle() async {
+    _mode = isDark ? ThemeMode.light : ThemeMode.dark;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, isDark ? 'dark' : 'light');
+    notifyListeners();
+    // Update status bar icons to match theme
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+    ));
+    notifyListeners();
+  }
+}
+
+// Global theme notifier instance — accessible anywhere
+final themeNotifier = ThemeNotifier();
+
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  @override
+  void initState() {
+    super.initState();
+    themeNotifier.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,13 +81,15 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'GigNation',
       theme: AppTheme.light,
-      home: const AuthGate(),
+      darkTheme: AppTheme.dark,
+      themeMode: themeNotifier.mode,
+      home: const SplashScreen(),
     );
   }
 }
 
 // ─────────────────────────────────────────────
-// Auth Gate
+// Auth Gate — checks profile_complete for ALL auth methods
 // ─────────────────────────────────────────────
 
 class AuthGate extends StatefulWidget {
@@ -50,51 +100,170 @@ class AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<AuthGate> {
-  bool get _isLoggedIn =>
-      Supabase.instance.client.auth.currentSession != null;
+  bool _checking = true;
+  Widget? _destination;
 
   @override
   void initState() {
     super.initState();
+    _checkAuth();
+
+    // Listen for auth changes (e.g. email confirmation redirect)
     Supabase.instance.client.auth.onAuthStateChange.listen((data) {
       if (!mounted) return;
-      setState(() {});
+      _checkAuth();
     });
+  }
+
+  Future<void> _checkAuth() async {
+    setState(() => _checking = true);
+
+    final session = Supabase.instance.client.auth.currentSession;
+
+    if (session == null) {
+      // Not logged in — show welcome screen
+      setState(() {
+        _destination = const HomeScreen();
+        _checking = false;
+      });
+      return;
+    }
+
+    // Logged in — check if profile is complete
+    try {
+      final userId = session.user.id;
+      final response = await Supabase.instance.client
+          .from('profile')
+          .select('profile_complete')
+          .eq('id', userId)
+          .maybeSingle();
+
+      final isComplete = response?['profile_complete'] == true;
+
+      setState(() {
+        _destination = isComplete
+            ? const HomePage()
+            : const ProfileSetupScreen();
+        _checking = false;
+      });
+    } catch (_) {
+      // If profile row doesn't exist yet, send to setup
+      setState(() {
+        _destination = const ProfileSetupScreen();
+        _checking = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoggedIn) {
-      return const HomePage();
+    if (_checking) {
+      return Scaffold(
+        backgroundColor: GigColors.backgroundOf(context),
+        body: Center(
+          child: CircularProgressIndicator(
+            color: GigColors.primary,
+            strokeWidth: 2.5,
+          ),
+        ),
+      );
     }
-    return const HomeScreen();
+    return _destination!;
   }
 }
 
 // ─────────────────────────────────────────────
-// Design System
+// Color System — Dark & Light
+// ─────────────────────────────────────────────
+
+class GigColors {
+  GigColors._();
+
+  // ── Brand accent — Gold/Amber ──
+  static const primary = Color(0xFFD4A017);
+  static const primaryDark = Color(0xFFB8880E);
+  static const primaryLight = Color(0xFFFFF8E7);
+  static const accent = Color(0xFFF5C842);
+
+  // ── Static fallbacks used by splash & const widgets ──
+  static const background = Color(0xFF0F0F0F);  // always dark for splash
+
+  // ── Dark mode ──
+  static const darkBackground = Color(0xFF0F0F0F);
+  static const darkSurface = Color(0xFF1A1A1A);
+  static const darkCard = Color(0xFF222222);
+  static const darkBorder = Color(0xFF2E2E2E);
+  static const darkTextPrimary = Color(0xFFF5F5F5);
+  static const darkTextSecondary = Color(0xFF9E9E9E);
+  static const darkTextHint = Color(0xFF616161);
+
+  // ── Light mode ──
+  static const lightBackground = Color(0xFFFAF9F6);
+  static const lightSurface = Color(0xFFFFFFFF);
+  static const lightCard = Color(0xFFFFFFFF);
+  static const lightBorder = Color(0xFFE8E4DC);
+  static const lightTextPrimary = Color(0xFF1A1A1A);
+  static const lightTextSecondary = Color(0xFF6B6B6B);
+  static const lightTextHint = Color(0xFFABABAB);
+
+  // ── Semantic ──
+  static const error = Color(0xFFEF4444);
+  static const success = Color(0xFF10B981);
+
+  // ── Context-aware helpers ──
+  static Color backgroundOf(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+          ? darkBackground
+          : lightBackground;
+
+  static Color surfaceOf(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+          ? darkSurface
+          : lightSurface;
+
+  static Color textPrimaryOf(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+          ? darkTextPrimary
+          : lightTextPrimary;
+
+  static Color textSecondaryOf(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+          ? darkTextSecondary
+          : lightTextSecondary;
+
+  static Color borderOf(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+          ? darkBorder
+          : lightBorder;
+}
+
+// ─────────────────────────────────────────────
+// Legacy AppColors alias — keeps existing screens working
 // ─────────────────────────────────────────────
 
 class AppColors {
   AppColors._();
 
-  static const primary = Color(0xFF1A56DB);
-  static const primaryDark = Color(0xFF1344B8);
-  static const primaryLight = Color(0xFFEBF0FF);
-  static const accent = Color(0xFF06B6D4);
-  static const surface = Color(0xFFFFFFFF);
-  static const background = Color(0xFFF4F6FB);
-  static const card = Color(0xFFFFFFFF);
-  static const textPrimary = Color(0xFF111827);
-  static const textSecondary = Color(0xFF6B7280);
-  static const textHint = Color(0xFF9CA3AF);
-  static const border = Color(0xFFE5E7EB);
-  static const error = Color(0xFFEF4444);
-  static const success = Color(0xFF10B981);
-
-  static const gradientStart = Color(0xFF1A56DB);
-  static const gradientEnd = Color(0xFF06B6D4);
+  static const primary = GigColors.primary;
+  static const primaryDark = GigColors.primaryDark;
+  static const primaryLight = GigColors.primaryLight;
+  static const accent = GigColors.accent;
+  static const surface = GigColors.lightSurface;
+  static const background = GigColors.lightBackground;
+  static const card = GigColors.lightCard;
+  static const textPrimary = GigColors.lightTextPrimary;
+  static const textSecondary = GigColors.lightTextSecondary;
+  static const textHint = GigColors.lightTextHint;
+  static const border = GigColors.lightBorder;
+  static const error = GigColors.error;
+  static const success = GigColors.success;
+  static const gradientStart = GigColors.primary;
+  static const gradientEnd = GigColors.accent;
 }
+
+// ─────────────────────────────────────────────
+// Text Styles
+// ─────────────────────────────────────────────
 
 class AppTextStyles {
   AppTextStyles._();
@@ -103,7 +272,6 @@ class AppTextStyles {
     fontSize: 32,
     fontWeight: FontWeight.w800,
     letterSpacing: -0.5,
-    color: AppColors.textPrimary,
     height: 1.2,
   );
 
@@ -111,7 +279,6 @@ class AppTextStyles {
     fontSize: 26,
     fontWeight: FontWeight.w700,
     letterSpacing: -0.3,
-    color: AppColors.textPrimary,
     height: 1.25,
   );
 
@@ -119,20 +286,17 @@ class AppTextStyles {
     fontSize: 20,
     fontWeight: FontWeight.w600,
     letterSpacing: -0.2,
-    color: AppColors.textPrimary,
   );
 
   static const bodyLarge = TextStyle(
     fontSize: 16,
     fontWeight: FontWeight.w400,
-    color: AppColors.textSecondary,
     height: 1.5,
   );
 
   static const bodyMedium = TextStyle(
     fontSize: 14,
     fontWeight: FontWeight.w400,
-    color: AppColors.textSecondary,
     height: 1.5,
   );
 
@@ -140,7 +304,6 @@ class AppTextStyles {
     fontSize: 13,
     fontWeight: FontWeight.w600,
     letterSpacing: 0.3,
-    color: AppColors.textSecondary,
   );
 
   static const buttonText = TextStyle(
@@ -151,71 +314,99 @@ class AppTextStyles {
   );
 }
 
+// ─────────────────────────────────────────────
+// App Theme — Light & Dark
+// ─────────────────────────────────────────────
+
 class AppTheme {
   AppTheme._();
 
-  static ThemeData get light => ThemeData(
-    useMaterial3: true,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: AppColors.primary,
-      brightness: Brightness.light,
-    ),
-    scaffoldBackgroundColor: AppColors.background,
-    elevatedButtonTheme: ElevatedButtonThemeData(
-      style: ElevatedButton.styleFrom(
-        elevation: 0,
-        shadowColor: Colors.transparent,
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        minimumSize: const Size(double.infinity, 52),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
-        textStyle: AppTextStyles.buttonText,
+  static ThemeData get dark => _build(Brightness.dark);
+  static ThemeData get light => _build(Brightness.light);
+
+  static ThemeData _build(Brightness brightness) {
+    final isDark = brightness == Brightness.dark;
+    final bg = isDark ? GigColors.darkBackground : GigColors.lightBackground;
+    final surface = isDark ? GigColors.darkSurface : GigColors.lightSurface;
+    final border = isDark ? GigColors.darkBorder : GigColors.lightBorder;
+    final textPrimary =
+        isDark ? GigColors.darkTextPrimary : GigColors.lightTextPrimary;
+    final textHint =
+        isDark ? GigColors.darkTextHint : GigColors.lightTextHint;
+
+    return ThemeData(
+      useMaterial3: true,
+      brightness: brightness,
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: GigColors.primary,
+        brightness: brightness,
       ),
-    ),
-    outlinedButtonTheme: OutlinedButtonThemeData(
-      style: OutlinedButton.styleFrom(
-        foregroundColor: AppColors.primary,
-        minimumSize: const Size(double.infinity, 52),
-        side: const BorderSide(color: AppColors.border, width: 1.5),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
+      scaffoldBackgroundColor: bg,
+      cardColor: isDark ? GigColors.darkCard : GigColors.lightCard,
+      dividerColor: border,
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          elevation: 0,
+          shadowColor: Colors.transparent,
+          backgroundColor: GigColors.primary,
+          foregroundColor: Colors.white,
+          minimumSize: const Size(double.infinity, 52),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          textStyle: AppTextStyles.buttonText,
         ),
-        textStyle: const TextStyle(
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: GigColors.primary,
+          minimumSize: const Size(double.infinity, 52),
+          side: BorderSide(color: border, width: 1.5),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          textStyle: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.2,
+          ),
+        ),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: surface,
+        hintStyle: TextStyle(
+          color: textHint,
           fontSize: 15,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.2,
+          fontWeight: FontWeight.w400,
+        ),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: border, width: 1),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: border, width: 1),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: GigColors.primary, width: 1.5),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: GigColors.error, width: 1),
         ),
       ),
-    ),
-    inputDecorationTheme: InputDecorationTheme(
-      filled: true,
-      fillColor: AppColors.surface,
-      hintStyle: const TextStyle(
-        color: AppColors.textHint,
-        fontSize: 15,
-        fontWeight: FontWeight.w400,
+      textTheme: TextTheme(
+        bodyLarge: TextStyle(color: textPrimary),
+        bodyMedium: TextStyle(color: textPrimary),
+        titleLarge: TextStyle(color: textPrimary),
+        displayLarge: TextStyle(color: textPrimary),
       ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.border, width: 1),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.border, width: 1),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-      ),
-      errorBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(14),
-        borderSide: const BorderSide(color: AppColors.error, width: 1),
-      ),
-    ),
-  );
+    );
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -242,14 +433,14 @@ class GradientButton extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           gradient: const LinearGradient(
-            colors: [AppColors.gradientStart, AppColors.gradientEnd],
+            colors: [GigColors.primary, GigColors.accent],
             begin: Alignment.centerLeft,
             end: Alignment.centerRight,
           ),
           borderRadius: BorderRadius.circular(14),
           boxShadow: [
             BoxShadow(
-              color: AppColors.primary.withOpacity(0.35),
+              color: GigColors.primary.withOpacity(0.35),
               blurRadius: 16,
               offset: const Offset(0, 6),
             ),
@@ -267,13 +458,13 @@ class GradientButton extends StatelessWidget {
           ),
           child: isLoading
               ? const SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Colors.white,
-            ),
-          )
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
               : Text(label, style: AppTextStyles.buttonText),
         ),
       ),
@@ -305,28 +496,99 @@ class AppTextField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final textPrimary = GigColors.textPrimaryOf(context);
+    final textHint = Theme.of(context).brightness == Brightness.dark
+        ? GigColors.darkTextHint
+        : GigColors.lightTextHint;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: AppTextStyles.label),
+        Text(label,
+            style: AppTextStyles.label.copyWith(color: GigColors.textSecondaryOf(context))),
         const SizedBox(height: 8),
         TextField(
           controller: controller,
           obscureText: obscureText,
           keyboardType: keyboardType,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 15,
-            color: AppColors.textPrimary,
+            color: textPrimary,
             fontWeight: FontWeight.w500,
           ),
           decoration: InputDecoration(
             hintText: hint,
             errorText: errorText,
-            prefixIcon: Icon(prefixIcon, size: 20, color: AppColors.textHint),
+            prefixIcon: Icon(prefixIcon, size: 20, color: textHint),
             suffixIcon: suffixWidget,
           ),
         ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+// Theme Toggle Widget — drop anywhere in your app
+// ─────────────────────────────────────────────
+
+class ThemeToggle extends StatefulWidget {
+  const ThemeToggle({super.key});
+
+  @override
+  State<ThemeToggle> createState() => _ThemeToggleState();
+}
+
+class _ThemeToggleState extends State<ThemeToggle> {
+  @override
+  void initState() {
+    super.initState();
+    themeNotifier.addListener(_rebuild);
+  }
+
+  void _rebuild() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    themeNotifier.removeListener(_rebuild);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = themeNotifier.isDark;
+    return GestureDetector(
+      onTap: themeNotifier.toggle,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        width: 52,
+        height: 28,
+        decoration: BoxDecoration(
+          color: isDark ? GigColors.primary : GigColors.lightBorder,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: AnimatedAlign(
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeInOut,
+          alignment: isDark ? Alignment.centerRight : Alignment.centerLeft,
+          child: Container(
+            margin: const EdgeInsets.all(3),
+            width: 22,
+            height: 22,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+              size: 13,
+              color: isDark ? GigColors.primary : GigColors.lightTextSecondary,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -353,23 +615,32 @@ class _HomeScreenState extends State<HomeScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(error),
-          backgroundColor: AppColors.error,
+          backgroundColor: GigColors.error,
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.all(16),
         ),
       );
     }
-    // If success, AuthGate rebuilds automatically via onAuthStateChange
+    // AuthGate rebuilds automatically and checks profile_complete
     setState(() => _isGoogleLoading = false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final bg = GigColors.backgroundOf(context);
+    final textPrimary = GigColors.textPrimaryOf(context);
+    final textSecondary = GigColors.textSecondaryOf(context);
+    final surfaceColor = GigColors.surfaceOf(context);
+    final borderColor = GigColors.borderOf(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: bg,
       body: Stack(
         children: [
+          // Background glow circles
           Positioned(
             top: -80,
             right: -80,
@@ -380,8 +651,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: [
-                    AppColors.primary.withOpacity(0.12),
-                    AppColors.accent.withOpacity(0.04),
+                    GigColors.primary.withOpacity(0.12),
+                    GigColors.accent.withOpacity(0.04),
                   ],
                 ),
               ),
@@ -395,7 +666,7 @@ class _HomeScreenState extends State<HomeScreen> {
               height: 200,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: AppColors.accent.withOpacity(0.07),
+                color: GigColors.accent.withOpacity(0.07),
               ),
             ),
           ),
@@ -405,20 +676,28 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Theme toggle top right
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: const ThemeToggle(),
+                    ),
+                  ),
                   const Spacer(flex: 2),
                   Container(
                     width: 68,
                     height: 68,
                     decoration: BoxDecoration(
                       gradient: const LinearGradient(
-                        colors: [AppColors.gradientStart, AppColors.gradientEnd],
+                        colors: [GigColors.primary, GigColors.accent],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
                       borderRadius: BorderRadius.circular(20),
                       boxShadow: [
                         BoxShadow(
-                          color: AppColors.primary.withOpacity(0.35),
+                          color: GigColors.primary.withOpacity(0.35),
                           blurRadius: 20,
                           offset: const Offset(0, 8),
                         ),
@@ -431,11 +710,16 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                   const SizedBox(height: 28),
-                  const Text('Services,\nOn Demand.', style: AppTextStyles.displayLarge),
+                  Text(
+                    'Services,\nOn Demand.',
+                    style: AppTextStyles.displayLarge
+                        .copyWith(color: textPrimary),
+                  ),
                   const SizedBox(height: 14),
-                  const Text(
+                  Text(
                     'Connect with skilled professionals for\nany job — fast, reliable, and trusted.',
-                    style: AppTextStyles.bodyLarge,
+                    style: AppTextStyles.bodyLarge
+                        .copyWith(color: textSecondary),
                   ),
                   const Spacer(flex: 3),
                   Row(
@@ -448,84 +732,80 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                   const SizedBox(height: 36),
-
-                  // ── Get Started (email) ──
                   GradientButton(
                     label: 'Login',
                     onPressed: () => Navigator.push(
-                      context,
-                      _fadeRoute(const LoginScreen()),
-                    ),
+                        context, _fadeRoute(const LoginScreen())),
                   ),
                   const SizedBox(height: 14),
-
-                  // ── Create Account ──
                   SizedBox(
                     width: double.infinity,
                     height: 52,
                     child: OutlinedButton(
                       onPressed: () => Navigator.push(
-                        context,
-                        _fadeRoute(const RegisterScreen()),
+                          context, _fadeRoute(const RegisterScreen())),
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: borderColor, width: 1.5),
                       ),
-                      child: const Text(
+                      child: Text(
                         'Get Started',
                         style: TextStyle(
                           fontSize: 15,
                           fontWeight: FontWeight.w600,
-                          color: AppColors.primary,
+                          color: GigColors.primary,
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(height: 14),
-
-                  // ✅ Added: Continue with Google on welcome screen
                   _isGoogleLoading
                       ? const Center(
-                    child: SizedBox(
-                      height: 52,
-                      child: Center(
-                        child: CircularProgressIndicator(
-                            color: AppColors.primary),
-                      ),
-                    ),
-                  )
-                      : GestureDetector(
-                    onTap: _signInWithGoogle,
-                    child: Container(
-                      width: double.infinity,
-                      height: 52,
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                            color: AppColors.border, width: 1.5),
-                      ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.g_mobiledata_rounded,
-                              size: 24, color: AppColors.textPrimary),
-                          SizedBox(width: 10),
-                          Text(
-                            'Continue with Google',
-                            style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.textPrimary,
+                          child: SizedBox(
+                            height: 52,
+                            child: Center(
+                              child: CircularProgressIndicator(
+                                  color: GigColors.primary),
                             ),
                           ),
-                        ],
-                      ),
-                    ),
-                  ),
-
+                        )
+                      : GestureDetector(
+                          onTap: _signInWithGoogle,
+                          child: Container(
+                            width: double.infinity,
+                            height: 52,
+                            decoration: BoxDecoration(
+                              color: surfaceColor,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                  color: borderColor, width: 1.5),
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.g_mobiledata_rounded,
+                                    size: 24, color: textPrimary),
+                                const SizedBox(width: 10),
+                                Text(
+                                  'Continue with Google',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                    color: textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                   const SizedBox(height: 16),
                   Center(
                     child: Text(
                       'By continuing, you agree to our Terms & Privacy Policy',
-                      style: TextStyle(fontSize: 12, color: AppColors.textHint),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: isDark
+                              ? GigColors.darkTextHint
+                              : GigColors.lightTextHint),
                       textAlign: TextAlign.center,
                     ),
                   ),
@@ -543,7 +823,6 @@ class _HomeScreenState extends State<HomeScreen> {
 class _FeatureChip extends StatelessWidget {
   final IconData icon;
   final String label;
-
   const _FeatureChip({required this.icon, required this.label});
 
   @override
@@ -551,20 +830,20 @@ class _FeatureChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       decoration: BoxDecoration(
-        color: AppColors.primaryLight,
+        color: GigColors.primary.withOpacity(0.12),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: AppColors.primary),
+          Icon(icon, size: 14, color: GigColors.primary),
           const SizedBox(width: 5),
           Text(
             label,
             style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w600,
-              color: AppColors.primary,
+              color: GigColors.primary,
             ),
           ),
         ],
@@ -574,8 +853,8 @@ class _FeatureChip extends StatelessWidget {
 }
 
 PageRoute _fadeRoute(Widget page) => PageRouteBuilder(
-  pageBuilder: (_, __, ___) => page,
-  transitionsBuilder: (_, animation, __, child) =>
-      FadeTransition(opacity: animation, child: child),
-  transitionDuration: const Duration(milliseconds: 250),
-);
+      pageBuilder: (_, __, ___) => page,
+      transitionsBuilder: (_, animation, __, child) =>
+          FadeTransition(opacity: animation, child: child),
+      transitionDuration: const Duration(milliseconds: 250),
+    );

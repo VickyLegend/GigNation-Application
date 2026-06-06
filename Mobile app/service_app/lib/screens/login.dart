@@ -68,14 +68,11 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text.trim(),
       );
       if (!mounted) return;
-      Navigator.pushReplacement(
+      // AuthGate checks profile_complete → ProfileSetup or HomePage
+      Navigator.pushAndRemoveUntil(
         context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomePage(),
-          transitionsBuilder: (_, animation, __, child) =>
-              FadeTransition(opacity: animation, child: child),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+        (route) => false,
       );
     } on AuthException catch (e) {
       setState(() {
@@ -101,14 +98,11 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (error == null) {
-      Navigator.pushReplacement(
+      // AuthGate checks profile_complete → ProfileSetup or HomePage
+      Navigator.pushAndRemoveUntil(
         context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomePage(),
-          transitionsBuilder: (_, animation, __, child) =>
-              FadeTransition(opacity: animation, child: child),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+        (route) => false,
       );
     } else if (error != 'Sign-in cancelled') {
       setState(() => _emailError = error);
