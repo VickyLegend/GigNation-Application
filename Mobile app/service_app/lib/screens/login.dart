@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../main.dart';
-import 'home.dart';
 import '../services/google_auth_service.dart';
 import 'pages/forgot_password_page.dart';
 import 'register.dart'; // ✅ Added import so we can push to RegisterScreen
