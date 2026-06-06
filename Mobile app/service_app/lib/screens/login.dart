@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../main.dart';
-import 'home.dart';
 import '../services/google_auth_service.dart';
 import 'pages/forgot_password_page.dart';
 import 'register.dart'; // ✅ Added import so we can push to RegisterScreen
@@ -68,14 +67,11 @@ class _LoginScreenState extends State<LoginScreen> {
         password: _passwordController.text.trim(),
       );
       if (!mounted) return;
-      Navigator.pushReplacement(
+      // AuthGate checks profile_complete → ProfileSetup or HomePage
+      Navigator.pushAndRemoveUntil(
         context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomePage(),
-          transitionsBuilder: (_, animation, __, child) =>
-              FadeTransition(opacity: animation, child: child),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+        (route) => false,
       );
     } on AuthException catch (e) {
       setState(() {
@@ -101,14 +97,11 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (error == null) {
-      Navigator.pushReplacement(
+      // AuthGate checks profile_complete → ProfileSetup or HomePage
+      Navigator.pushAndRemoveUntil(
         context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomePage(),
-          transitionsBuilder: (_, animation, __, child) =>
-              FadeTransition(opacity: animation, child: child),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+        (route) => false,
       );
     } else if (error != 'Sign-in cancelled') {
       setState(() => _emailError = error);

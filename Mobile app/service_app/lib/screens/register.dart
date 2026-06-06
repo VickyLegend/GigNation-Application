@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../main.dart';
 import '../services/google_auth_service.dart';
-import 'home.dart';
-import 'login.dart'; // ✅ Added import so we can push to LoginScreen
+import 'login.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -120,14 +119,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
     if (!mounted) return;
 
     if (error == null) {
-      Navigator.pushReplacement(
+      // AuthGate checks profile_complete → ProfileSetup or HomePage
+      Navigator.pushAndRemoveUntil(
         context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomePage(),
-          transitionsBuilder: (_, animation, __, child) =>
-              FadeTransition(opacity: animation, child: child),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthGate()),
+        (route) => false,
       );
     } else if (error != 'Sign-in cancelled') {
       setState(() => _emailError = error);
